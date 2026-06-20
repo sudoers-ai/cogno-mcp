@@ -1,0 +1,76 @@
+[project]
+name = "cogno-mcp"
+version = "0.1.0"
+description = "Bridge an MCP (Model Context Protocol) server's tools to cogno-anima's tool contract — MCPDispatcher implements ToolDispatcher + ToolPolicyDispatcher so the EGO/cogno-soma see MCP tools as ordinary tools. SDK-free mapping; thin stdio/HTTP/SSE transports over the official mcp SDK."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Sudoers AI" }]
+keywords = ["mcp", "model-context-protocol", "tools", "agents", "cogno", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
+]
+# The MCPDispatcher mapping needs only cogno-anima (ToolResult/MCPDispatchError).
+# The official `mcp` SDK is an optional extra — required only for the transport
+# helpers (stdio/HTTP/SSE), lazy-imported so the dispatcher works SDK-free.
+dependencies = [
+    "cogno-anima",
+]
+
+[project.urls]
+Homepage = "https://github.com/sudoers-ai/cogno-mcp"
+Repository = "https://github.com/sudoers-ai/cogno-mcp"
+Issues = "https://github.com/sudoers-ai/cogno-mcp/issues"
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.0"]
+dev = [
+    "mcp>=1.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+    "mypy>=1.8",
+]
+
+[build-system]
+requires = ["setuptools>=77.0.3", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["cogno_mcp*"]
+
+[tool.setuptools.package-data]
+cogno_mcp = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.coverage.run]
+# The transport helpers are thin glue over the official mcp SDK, exercised by the
+# gated integration job (a real server over stdio), not the unit job.
+omit = ["cogno_mcp/transports.py"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+files = ["cogno_mcp"]
+warn_unused_ignores = true
