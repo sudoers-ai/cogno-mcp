@@ -15,31 +15,11 @@ is fully unit-testable with fakes, and the transport is the official SDK's job.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from cogno_anima.types import ToolResult
 
 from cogno_mcp.errors import MCPDispatchError
-
-# A role gate: given (tool_name, caller_role) → may this role call this tool? ``None`` gates nothing.
-RoleGate = Callable[[str, str], bool]
-
-
-def role_gate_from_map(allowed: "Mapping[str, set[str]]") -> RoleGate:
-    """Build a :data:`RoleGate` from ``{tool_name: {allowed roles}}``.
-
-    A tool ABSENT from the map is ungated (callable by any role); a tool present is callable
-    only by a caller whose role is in its set. Role match is case-insensitive. The *host/vertical*
-    owns this policy (RBAC is a host concern) and injects the built gate into the dispatcher — e.g.
-    a scheduling vertical declares ``{"set_schedule_settings": STAFF, "set_auto_confirm": STAFF}``.
-    """
-    norm = {t: {r.upper() for r in roles} for t, roles in allowed.items()}
-
-    def gate(tool: str, role: str) -> bool:
-        roles = norm.get(tool)
-        return roles is None or (role or "").upper() in roles
-
-    return gate
 
 
 def _content_to_text(result: Any) -> str:
@@ -65,41 +45,28 @@ class MCPDispatcher:
     """A cogno-anima ``ToolDispatcher`` (+ ``ToolPolicyDispatcher``) over one MCP session."""
 
     def __init__(self, session: Any, tools: Sequence[Any], *,
-                 names: Optional[Sequence[str]] = None,
-                 caller_role: str = "", role_gate: Optional[RoleGate] = None) -> None:
+                 names: Optional[Sequence[str]] = None) -> None:
         """
         Args:
-            session:     an established MCP client session (``initialize()`` already called).
-            tools:       the server's tools (from ``list_tools()``), cached for sync schema access.
-            names:       the subset of tool names to expose; ``None`` → expose all.
-            caller_role: the current identity's role (host-injected); used with ``role_gate``.
-            role_gate:   optional RBAC gate ``(tool, role) → allowed``. When set, tools the caller's
-                         role may NOT call are HIDDEN from ``tools_schema`` (so the model never sees,
-                         nor tries, a tool it can't use) AND refused by ``execute`` (defence in depth).
-                         ``None`` → no gating (all tools exposed, back-compat).
+            session: an established MCP client session (``initialize()`` already called).
+            tools:   the server's tools (from ``list_tools()``), cached for sync schema access.
+            names:   the subset of tool names to expose; ``None`` → expose all.
         """
         self._session = session
         self._tools: dict[str, Any] = {t.name: t for t in tools}
         self._names = list(names) if names is not None else list(self._tools)
-        self._caller_role = caller_role
-        self._role_gate = role_gate
 
     @classmethod
-    async def create(cls, session: Any, *, names: Optional[Sequence[str]] = None,
-                     caller_role: str = "", role_gate: Optional[RoleGate] = None) -> "MCPDispatcher":
+    async def create(cls, session: Any, *, names: Optional[Sequence[str]] = None) -> "MCPDispatcher":
         """Connect to the session's tool list and build a dispatcher."""
         resp = await session.list_tools()
-        return cls(session, resp.tools, names=names, caller_role=caller_role, role_gate=role_gate)
-
-    def _allowed(self, name: str) -> bool:
-        """Whether the caller's role may call ``name`` (True when no gate is configured)."""
-        return self._role_gate is None or bool(self._role_gate(name, self._caller_role))
+        return cls(session, resp.tools, names=names)
 
     def tools_schema(self) -> list[dict]:
         schemas: list[dict] = []
         for name in self._names:
             tool = self._tools.get(name)
-            if tool is None or not self._allowed(name):   # hide tools the caller's role can't call
+            if tool is None:
                 continue
             schemas.append({
                 "type": "function",
@@ -116,11 +83,6 @@ class MCPDispatcher:
         if name not in self._tools:
             # hallucinated / unknown name → recoverable, the EGO self-corrects
             return ToolResult(output="", ok=False, error=f"unknown tool: {name}")
-        if not self._allowed(name):
-            # Defence in depth: the tool was hidden from tools_schema, but a leaked/hallucinated
-            # call must still never execute a role-gated tool for the wrong role.
-            return ToolResult(output="", ok=False,
-                              error=f"role {self._caller_role or '(none)'!r} may not call {name!r}")
         side_effect = self.is_mutating(name)
         try:
             result = await self._session.call_tool(name, arguments)
