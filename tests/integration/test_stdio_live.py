@@ -41,3 +41,23 @@ async def test_dispatcher_over_real_stdio_server():
         assert res.ok is True
         assert "5" in res.output
         assert res.side_effect is False
+
+
+@pytest.mark.asyncio
+async def test_role_gate_over_real_stdio_server():
+    """Over a REAL MCP round-trip: a role gate HIDES a tool from a caller whose role can't call it
+    (the model never sees it) and refuses it at execute (defence in depth); an allowed role sees +
+    runs it."""
+    from cogno_mcp.dispatcher import role_gate_from_map
+    gate = role_gate_from_map({"wipe": {"ADMIN"}})
+    async with stdio_session(sys.executable, args=[SERVER]) as session:
+        guest = await MCPDispatcher.create(session, caller_role="GUEST", role_gate=gate)
+        gnames = {s["function"]["name"] for s in guest.tools_schema()}
+        assert "wipe" not in gnames and "add" in gnames        # hidden from GUEST, read stays
+        res = await guest.execute("wipe", {"target": "x"})     # defence in depth
+        assert res.ok is False and "may not call" in (res.error or "")
+
+        admin = await MCPDispatcher.create(session, caller_role="ADMIN", role_gate=gate)
+        assert "wipe" in {s["function"]["name"] for s in admin.tools_schema()}
+        res2 = await admin.execute("wipe", {"target": "x"})
+        assert res2.ok is True and "wiped x" in res2.output
