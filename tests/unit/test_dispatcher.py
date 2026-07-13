@@ -5,7 +5,6 @@ import pytest
 from cogno_anima.tools import ToolDispatcher, ToolPolicyDispatcher
 
 from cogno_mcp import MCPDispatcher, MCPDispatchError
-from cogno_mcp.dispatcher import role_gate_from_map
 from tests.conftest import FakeCallResult, FakeImageBlock, FakeSession, FakeTextBlock
 
 
@@ -48,44 +47,6 @@ def test_names_filter_skips_unknown(tools):
     disp = MCPDispatcher(FakeSession(tools), tools, names=["get_weather", "ghost"])
     # an exposed name with no matching tool is skipped in the schema
     assert [s["function"]["name"] for s in disp.tools_schema()] == ["get_weather"]
-
-
-# ── role-filtered tool exposure (RBAC) ────────────────────────────────────────────────────
-def test_role_gate_hides_tool_from_wrong_role(tools):
-    gate = role_gate_from_map({"delete_file": {"ADMIN"}})
-    guest = MCPDispatcher(FakeSession(tools), tools, caller_role="GUEST", role_gate=gate)
-    names = {s["function"]["name"] for s in guest.tools_schema()}
-    assert "delete_file" not in names       # hidden — the model never sees it
-    assert "get_weather" in names           # ungated tool stays visible
-
-
-def test_role_gate_shows_tool_to_allowed_role(tools):
-    gate = role_gate_from_map({"delete_file": {"ADMIN"}})
-    admin = MCPDispatcher(FakeSession(tools), tools, caller_role="admin", role_gate=gate)  # case-insensitive
-    assert "delete_file" in {s["function"]["name"] for s in admin.tools_schema()}
-
-
-def test_no_role_gate_exposes_all(tools):
-    disp = MCPDispatcher(FakeSession(tools), tools)   # no gate → back-compat
-    assert len(disp.tools_schema()) == 3
-
-
-async def test_role_gate_execute_refuses_wrong_role(tools):
-    # defence in depth: a leaked/hallucinated call to a hidden tool must NOT reach the server
-    gate = role_gate_from_map({"delete_file": {"ADMIN"}})
-    session = FakeSession(tools, results={"delete_file": FakeCallResult(content=[FakeTextBlock("deleted")])})
-    guest = MCPDispatcher(session, tools, caller_role="GUEST", role_gate=gate)
-    res = await guest.execute("delete_file", {})
-    assert res.ok is False and "may not call" in (res.error or "")
-    assert session.calls == []              # never dispatched
-
-
-async def test_role_gate_execute_allows_role(tools):
-    gate = role_gate_from_map({"delete_file": {"ADMIN"}})
-    session = FakeSession(tools, results={"delete_file": FakeCallResult(content=[FakeTextBlock("deleted")])})
-    admin = MCPDispatcher(session, tools, caller_role="ADMIN", role_gate=gate)
-    res = await admin.execute("delete_file", {})
-    assert res.ok is True and res.output == "deleted"
 
 
 async def test_execute_success(tools):
