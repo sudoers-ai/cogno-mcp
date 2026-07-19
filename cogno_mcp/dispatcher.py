@@ -15,11 +15,18 @@ is fully unit-testable with fakes, and the transport is the official SDK's job.
 
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any, Optional, Sequence
 
 from cogno_anima.types import ToolResult
 
 from cogno_mcp.errors import MCPDispatchError
+
+# Default cap on the server-supplied tool ``description`` rendered into the EGO prompt: a
+# compromised/verbose MCP server could otherwise inject an unbounded blob (prompt injection +
+# num_ctx starvation). The host can raise/lower it per dispatcher.
+DEFAULT_MAX_DESCRIPTION_CHARS = 2048
 
 
 def _content_to_text(result: Any) -> str:
@@ -38,29 +45,55 @@ def _content_to_text(result: Any) -> str:
     if parts:
         return "\n".join(p for p in parts if p)
     structured = getattr(result, "structuredContent", None)
-    return "" if structured is None else str(structured)
+    if structured is None:
+        return ""
+    # JSON so the model consuming this sees valid syntax, not Python repr ({'a': True}).
+    try:
+        return json.dumps(structured, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(structured)
 
 
 class MCPDispatcher:
     """A cogno-anima ``ToolDispatcher`` (+ ``ToolPolicyDispatcher``) over one MCP session."""
 
     def __init__(self, session: Any, tools: Sequence[Any], *,
-                 names: Optional[Sequence[str]] = None) -> None:
+                 names: Optional[Sequence[str]] = None,
+                 call_timeout: Optional[float] = 30.0,
+                 trust_annotations: bool = True,
+                 max_description_chars: int = DEFAULT_MAX_DESCRIPTION_CHARS) -> None:
         """
         Args:
             session: an established MCP client session (``initialize()`` already called).
             tools:   the server's tools (from ``list_tools()``), cached for sync schema access.
             names:   the subset of tool names to expose; ``None`` → expose all.
+            call_timeout: seconds to wait for a tool call / list before treating the server as
+                hung (→ fatal ``MCPDispatchError``). ``None`` disables the timeout (wait forever).
+            trust_annotations: when ``False``, IGNORE the server's ``readOnlyHint``/
+                ``destructiveHint`` — every tool is treated as mutating AND confirmation-requiring.
+                Set it for a less-trusted third-party server: the MCP SDK warns that clients must
+                not make tool-safety decisions from an untrusted server's own annotations.
+            max_description_chars: cap on the tool ``description`` rendered into the EGO prompt.
         """
         self._session = session
         self._tools: dict[str, Any] = {t.name: t for t in tools}
         self._names = list(names) if names is not None else list(self._tools)
+        self._call_timeout = call_timeout
+        self._trust_annotations = trust_annotations
+        self._max_description_chars = max_description_chars
 
     @classmethod
-    async def create(cls, session: Any, *, names: Optional[Sequence[str]] = None) -> "MCPDispatcher":
+    async def create(cls, session: Any, *, names: Optional[Sequence[str]] = None,
+                     call_timeout: Optional[float] = 30.0,
+                     trust_annotations: bool = True,
+                     max_description_chars: int = DEFAULT_MAX_DESCRIPTION_CHARS) -> "MCPDispatcher":
         """Connect to the session's tool list and build a dispatcher."""
-        resp = await session.list_tools()
-        return cls(session, resp.tools, names=names)
+        try:
+            resp = await asyncio.wait_for(session.list_tools(), timeout=call_timeout)
+        except asyncio.TimeoutError as exc:
+            raise MCPDispatchError("list_tools", {}, exc) from exc
+        return cls(session, resp.tools, names=names, call_timeout=call_timeout,
+                   trust_annotations=trust_annotations, max_description_chars=max_description_chars)
 
     def tools_schema(self) -> list[dict]:
         schemas: list[dict] = []
@@ -68,11 +101,12 @@ class MCPDispatcher:
             tool = self._tools.get(name)
             if tool is None:
                 continue
+            desc = (getattr(tool, "description", "") or "")[:self._max_description_chars]
             schemas.append({
                 "type": "function",
                 "function": {
                     "name": tool.name,
-                    "description": getattr(tool, "description", "") or "",
+                    "description": desc,
                     "parameters": getattr(tool, "inputSchema", None) or {
                         "type": "object", "properties": {}},
                 },
@@ -85,7 +119,10 @@ class MCPDispatcher:
             return ToolResult(output="", ok=False, error=f"unknown tool: {name}")
         side_effect = self.is_mutating(name)
         try:
-            result = await self._session.call_tool(name, arguments)
+            result = await asyncio.wait_for(
+                self._session.call_tool(name, arguments), timeout=self._call_timeout)
+        except asyncio.TimeoutError as exc:  # hung server → fatal, don't pin the EGO worker forever
+            raise MCPDispatchError(name, arguments, exc) from exc
         except Exception as exc:  # transport/protocol fault → fatal, EGO propagates
             raise MCPDispatchError(name, arguments, exc) from exc
         text = _content_to_text(result)
@@ -97,11 +134,21 @@ class MCPDispatcher:
 
     # ── ToolPolicyDispatcher ──────────────────────────────────────────────
     def is_mutating(self, name: str) -> bool:
+        if not self._trust_annotations:
+            return True                       # untrusted server → assume every tool mutates
         ann = getattr(self._tools.get(name), "annotations", None)
         # read-only hint True → not mutating; otherwise conservative (assume mutating)
         return getattr(ann, "readOnlyHint", None) is not True
 
     def requires_confirmation(self, name: str) -> bool:
+        # Read-only tools never confirm. For a MUTATING tool, confirm UNLESS the server explicitly
+        # marked it non-destructive (``destructiveHint is False``): per the MCP spec destructiveHint
+        # DEFAULTS to true, so a mutating tool with no/omitted hint is destructive-by-default and
+        # must hit the EGO's gate B — the old "only when destructiveHint is True" was fail-open
+        # (a spec-compliant destructive tool that omitted the hint bypassed confirmation).
+        if not self.is_mutating(name):
+            return False
+        if not self._trust_annotations:
+            return True                       # untrusted server → always confirm a mutating tool
         ann = getattr(self._tools.get(name), "annotations", None)
-        # only gate when the server explicitly marks the tool destructive
-        return getattr(ann, "destructiveHint", None) is True
+        return getattr(ann, "destructiveHint", None) is not False

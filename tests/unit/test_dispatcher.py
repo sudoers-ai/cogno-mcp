@@ -5,7 +5,8 @@ import pytest
 from cogno_anima.tools import ToolDispatcher, ToolPolicyDispatcher
 
 from cogno_mcp import MCPDispatcher, MCPDispatchError
-from tests.conftest import FakeCallResult, FakeImageBlock, FakeSession, FakeTextBlock
+from tests.conftest import (
+    FakeAnnotations, FakeCallResult, FakeImageBlock, FakeSession, FakeTextBlock, FakeTool)
 
 
 def _disp(tools, **session_kw):
@@ -116,11 +117,58 @@ def test_policy_from_annotations(tools):
     assert disp.is_mutating("delete_file") is True         # readOnlyHint False
     assert disp.is_mutating("write_note") is True          # no annotations → conservative
     assert disp.requires_confirmation("delete_file") is True   # destructiveHint True
-    assert disp.requires_confirmation("get_weather") is False
-    assert disp.requires_confirmation("write_note") is False
+    assert disp.requires_confirmation("get_weather") is False  # read-only never confirms
+    # no annotations → mutating + destructiveHint DEFAULTS true (MCP spec) → confirm (fail-safe;
+    # was False, which let a spec-compliant destructive tool that omitted the hint bypass gate B).
+    assert disp.requires_confirmation("write_note") is True
+
+
+def test_explicitly_additive_write_does_not_confirm():
+    # a mutating tool the server marks destructiveHint=False (additive: create/append) skips the gate
+    additive = FakeTool("append_log", "Append a line.",
+                        annotations=FakeAnnotations(readOnlyHint=False, destructiveHint=False))
+    disp = MCPDispatcher(FakeSession([additive]), [additive])
+    assert disp.is_mutating("append_log") is True
+    assert disp.requires_confirmation("append_log") is False
 
 
 def test_policy_unknown_name_conservative(tools):
     disp = _disp(tools)
     assert disp.is_mutating("ghost") is True
-    assert disp.requires_confirmation("ghost") is False
+    assert disp.requires_confirmation("ghost") is True     # conservative: unknown → confirm
+
+
+def test_untrusted_server_ignores_annotations(tools):
+    # a less-trusted server's readOnlyHint=True must NOT let a tool bypass the gates
+    disp = MCPDispatcher(FakeSession(tools), tools, trust_annotations=False)
+    assert disp.is_mutating("get_weather") is True             # readOnlyHint=True ignored
+    assert disp.requires_confirmation("get_weather") is True   # always confirm under distrust
+
+
+async def test_hung_server_times_out_to_fatal():
+    # a call that never returns must not pin the worker forever → fatal MCPDispatchError
+    import asyncio
+
+    class HangingSession(FakeSession):
+        async def call_tool(self, name, arguments):
+            await asyncio.sleep(10)   # never returns within the timeout
+
+    tool = FakeTool("slow", "Slow tool.", annotations=FakeAnnotations(readOnlyHint=True))
+    disp = MCPDispatcher(HangingSession([tool]), [tool], call_timeout=0.05)
+    with pytest.raises(MCPDispatchError):
+        await disp.execute("slow", {})
+
+
+def test_description_is_capped_in_schema():
+    big = FakeTool("verbose", "x" * 10_000, annotations=FakeAnnotations(readOnlyHint=True))
+    disp = MCPDispatcher(FakeSession([big]), [big], max_description_chars=100)
+    schema = disp.tools_schema()[0]
+    assert len(schema["function"]["description"]) == 100
+
+
+async def test_structured_content_serialized_as_json():
+    tool = FakeTool("s", "s", annotations=FakeAnnotations(readOnlyHint=True))
+    session = FakeSession([tool], results={"s": FakeCallResult(structuredContent={"saved": True})})
+    disp = MCPDispatcher(session, [tool])
+    res = await disp.execute("s", {})
+    assert res.output == '{"saved": true}'   # JSON, not Python repr {'saved': True}
