@@ -118,9 +118,11 @@ def test_policy_from_annotations(tools):
     assert disp.is_mutating("write_note") is True          # no annotations → conservative
     assert disp.requires_confirmation("delete_file") is True   # destructiveHint True
     assert disp.requires_confirmation("get_weather") is False  # read-only never confirms
-    # no annotations → mutating + destructiveHint DEFAULTS true (MCP spec) → confirm (fail-safe;
-    # was False, which let a spec-compliant destructive tool that omitted the hint bypass gate B).
-    assert disp.requires_confirmation("write_note") is True
+    # no annotations → mutating but destructiveHint UNSET → NOT auto-confirmed. The ecosystem
+    # convention is that additive writes set only readOnlyHint=False; the host decides which
+    # additive commits need an OK (its ConfirmingDispatcher), so the MCP layer must not gate-B-hold
+    # every unannotated write (would break add_income / update_status).
+    assert disp.requires_confirmation("write_note") is False
 
 
 def test_explicitly_additive_write_does_not_confirm():
@@ -134,8 +136,8 @@ def test_explicitly_additive_write_does_not_confirm():
 
 def test_policy_unknown_name_conservative(tools):
     disp = _disp(tools)
-    assert disp.is_mutating("ghost") is True
-    assert disp.requires_confirmation("ghost") is True     # conservative: unknown → confirm
+    assert disp.is_mutating("ghost") is True                # unknown → assume mutating (safe)
+    assert disp.requires_confirmation("ghost") is False     # but not auto-confirmed (no destructiveHint)
 
 
 def test_untrusted_server_ignores_annotations(tools):
