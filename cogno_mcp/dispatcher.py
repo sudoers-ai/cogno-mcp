@@ -141,14 +141,17 @@ class MCPDispatcher:
         return getattr(ann, "readOnlyHint", None) is not True
 
     def requires_confirmation(self, name: str) -> bool:
-        # Read-only tools never confirm. For a MUTATING tool, confirm UNLESS the server explicitly
-        # marked it non-destructive (``destructiveHint is False``): per the MCP spec destructiveHint
-        # DEFAULTS to true, so a mutating tool with no/omitted hint is destructive-by-default and
-        # must hit the EGO's gate B — the old "only when destructiveHint is True" was fail-open
-        # (a spec-compliant destructive tool that omitted the hint bypassed confirmation).
+        # Confirm a tool the server EXPLICITLY marks destructive (``destructiveHint=True``). The
+        # convention across the ecosystem's own servers is that additive writes set only
+        # ``readOnlyHint=False`` (no destructiveHint) and are NOT auto-confirmed — the host layer
+        # (e.g. its ConfirmingDispatcher) decides which additive commits need an OK. Do NOT treat a
+        # missing destructiveHint as destructive: it would gate-B-hold every additive write
+        # (add_income, update_status, …) that the host expects to commit / confirm via prompt.
+        # For a LESS-TRUSTED server the host opts into ``trust_annotations=False`` → confirm every
+        # mutating tool (the SDK warns not to trust an untrusted server's own safety hints).
         if not self.is_mutating(name):
             return False
         if not self._trust_annotations:
             return True                       # untrusted server → always confirm a mutating tool
         ann = getattr(self._tools.get(name), "annotations", None)
-        return getattr(ann, "destructiveHint", None) is not False
+        return getattr(ann, "destructiveHint", None) is True
