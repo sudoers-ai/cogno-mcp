@@ -24,7 +24,7 @@ classifiers = [
 # The official `mcp` SDK is an optional extra — required only for the transport
 # helpers (stdio/HTTP/SSE), lazy-imported so the dispatcher works SDK-free.
 dependencies = [
-    "cogno-anima",
+    "cogno-anima>=0.1,<0.2",
 ]
 
 [project.urls]
