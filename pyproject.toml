@@ -33,9 +33,9 @@ Repository = "https://github.com/sudoers-ai/cogno-mcp"
 Issues = "https://github.com/sudoers-ai/cogno-mcp/issues"
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.0"]
+mcp = ["mcp>=1.0,<2"]
 dev = [
-    "mcp>=1.0",
+    "mcp>=1.0,<2",
     "pytest>=8.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0",
