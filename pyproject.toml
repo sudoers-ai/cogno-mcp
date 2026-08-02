@@ -1,6 +1,6 @@
 [project]
 name = "cogno-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Bridge an MCP (Model Context Protocol) server's tools to cogno-anima's tool contract — MCPDispatcher implements ToolDispatcher + ToolPolicyDispatcher so the EGO/cogno-soma see MCP tools as ordinary tools. SDK-free mapping; thin stdio/HTTP/SSE transports over the official mcp SDK."
 readme = "README.md"
 requires-python = ">=3.10"
