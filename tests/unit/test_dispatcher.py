@@ -89,6 +89,27 @@ async def test_execute_tool_error_is_recoverable(tools):
     assert res.error == "permission denied"
 
 
+async def test_a_mutating_tool_that_ERRORS_reports_no_side_effect(tools):
+    """The combination was already exercised here — it just was not ASSERTED.
+
+    ``test_execute_tool_error_is_recoverable`` above drives exactly this case (``delete_file``
+    is annotated ``readOnlyHint=False`` and the server returns ``isError``) and checks only
+    ``ok`` and ``error``, so the branch that stamped a REJECTED delete as a delete stayed green.
+
+    ``is_mutating`` answers per NAME, from the annotations, before the call; ``side_effect`` on
+    the result has to describe what HAPPENED.
+    """
+    session = FakeSession(tools, results={
+        "delete_file": FakeCallResult(content=[FakeTextBlock("permission denied")], isError=True)})
+    disp = MCPDispatcher(session, tools)
+    res = await disp.execute("delete_file", {})
+    assert res.ok is False
+    assert res.side_effect is False, "a delete the server refused is not a delete"
+    # ...and the TOOL is still declared mutating. Without this, making `is_mutating` answer
+    # False would satisfy the assertion above while destroying what it measures.
+    assert disp.is_mutating("delete_file") is True
+
+
 async def test_execute_unknown_tool_is_recoverable(tools):
     res = await _disp(tools).execute("ghost", {})
     assert res.ok is False

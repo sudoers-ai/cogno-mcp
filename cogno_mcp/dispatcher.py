@@ -117,7 +117,7 @@ class MCPDispatcher:
         if name not in self._tools:
             # hallucinated / unknown name → recoverable, the EGO self-corrects
             return ToolResult(output="", ok=False, error=f"unknown tool: {name}")
-        side_effect = self.is_mutating(name)
+        mutating = self.is_mutating(name)
         try:
             result = await asyncio.wait_for(
                 self._session.call_tool(name, arguments), timeout=self._call_timeout)
@@ -127,10 +127,14 @@ class MCPDispatcher:
             raise MCPDispatchError(name, arguments, exc) from exc
         text = _content_to_text(result)
         if getattr(result, "isError", False):
-            # a tool-level error is a recoverable business failure
+            # A tool-level error is a recoverable business failure — and it reports NO side
+            # effect. ``mutating`` comes from the tool's annotations, read per NAME before the
+            # call, so copying it here would say "this write happened" about a write the server
+            # rejected. The per-name question keeps its own answer (``is_mutating``); what stops
+            # is the RESULT claiming it.
             return ToolResult(output="", ok=False, error=text or "tool error",
-                              side_effect=side_effect)
-        return ToolResult(output=text, ok=True, side_effect=side_effect)
+                              side_effect=False)
+        return ToolResult(output=text, ok=True, side_effect=mutating)
 
     # ── ToolPolicyDispatcher ──────────────────────────────────────────────
     def is_mutating(self, name: str) -> bool:
