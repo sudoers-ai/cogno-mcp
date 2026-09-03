@@ -60,6 +60,55 @@ that connects, `initialize()`s, and tears down on exit — the host owns the lif
 | unknown tool name | recoverable `ToolResult(ok=False)` |
 | `annotations.readOnlyHint` | `is_mutating` (absent/false → conservative true) |
 | `annotations.destructiveHint = True` | `requires_confirmation` (drives the EGO gate) |
+| `_meta["cogno-mcp/needs_confirmation"] = true` | `ToolResult.needs_confirmation` (the EGO **holds** the call) |
+| `_meta["cogno-mcp/confirm_arguments"]` | `MCPToolResult.confirm_arguments` (what to add on confirmation) |
+
+## A tool that asks before it commits
+
+The EGO has three confirmation gates. Gate A masks writes when the *user* sounded tentative;
+gate B holds a tool the host declared destructive, **by name, before it runs**; gate C is the
+tool itself saying, about **this call** and what it just **read**, *"I did not commit — ask
+first"*. Only gate C can tell the user *which* row it is about to delete, and of what value,
+because only it has read.
+
+A server raises it from the `_meta` of its result — or of one of its content blocks, which is
+the placement the Python SDK's server side can actually fill:
+
+```python
+from mcp.types import TextContent
+from cogno_mcp import META_CONFIRM_ARGUMENTS, META_NEEDS_CONFIRMATION
+
+@mcp.tool(annotations={"readOnlyHint": False})          # mutating, NOT destructiveHint
+def remove_entry(query: str, confirm_tx_id: str = ""):
+    if confirm_tx_id:
+        return commit(confirm_tx_id)
+    row = read_one(query)
+    return TextContent(
+        type="text",
+        text=f"Would delete {row.desc} {row.amount} of {row.date}. Confirm?",
+        _meta={META_NEEDS_CONFIRMATION: True,
+               META_CONFIRM_ARGUMENTS: {"confirm_tx_id": row.id}},
+    )
+```
+
+Three things decide whether this works, and each has cost someone a turn:
+
+* **Do not declare the tool `destructiveHint`.** Gate B resolves per *name*, before anything
+  runs, so it holds the call and the tool never reads — the user gets "this is destructive"
+  instead of "this row, this amount". A tool whose danger is per *call* has to be allowed to
+  run in order to say so.
+* **`true`, the boolean.** The flag is a promise that nothing was committed, and the EGO
+  records the call `ok=False, side_effect=False` on the strength of it. A truthy `"false"` is
+  not that promise, so it is not read as one.
+* **Answer the question you were asked.** `confirm_arguments` is optional and names what *this
+  tool* needs in order to act on a "yes" — an id, not a boolean, if a row can move in between.
+  The host owns the consent; the tool owns what consent means to it. The core never invents an
+  argument name.
+
+`_meta` and not `structuredContent`: the latter is the tool's business payload, validated
+against its `outputSchema`, and returning a dict makes the *text* a JSON dump of that dict —
+replacing the grounded sentence that is the whole point. And not `isError`, which already means
+a recoverable failure the EGO feeds back for self-correction; a proposal is not a failure.
 
 ## Skills + MCP + native together
 

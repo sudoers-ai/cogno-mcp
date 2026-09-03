@@ -24,6 +24,9 @@ class FakeTool:
 class FakeTextBlock:
     text: str
     type: str = "text"
+    # The MCP spec's per-block ``_meta``; the SDK models it as ``.meta`` (wire alias ``_meta``).
+    # This is the placement the SDK's server side can actually reach — see the dispatcher.
+    meta: Optional[dict] = None
 
 
 @dataclass
@@ -36,6 +39,7 @@ class FakeCallResult:
     content: list = field(default_factory=list)
     isError: bool = False
     structuredContent: Any = None
+    meta: Optional[dict] = None      # result-level ``_meta`` (what a non-Python server sets)
 
 
 @dataclass

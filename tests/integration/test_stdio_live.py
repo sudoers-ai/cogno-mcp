@@ -6,21 +6,17 @@ policy mapping from real server annotations, and call_tool → ToolResult. Requi
 the ``mcp`` SDK (auto-skips otherwise); no network.
 """
 
-import sys
-from pathlib import Path
-
 import pytest
 
 pytest.importorskip("mcp.server.fastmcp", reason="mcp SDK not installed")
 
 from cogno_mcp import MCPDispatcher, stdio_session  # noqa: E402
-
-SERVER = str(Path(__file__).resolve().parent / "ref_server.py")
+from tests.integration.conftest import SERVER      # noqa: E402
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_over_real_stdio_server():
-    async with stdio_session(sys.executable, args=[SERVER]) as session:
+async def test_dispatcher_over_real_stdio_server(python, ref_server_env):
+    async with stdio_session(python, args=[SERVER], env=ref_server_env) as session:
         disp = await MCPDispatcher.create(session)
 
         names = {s["function"]["name"] for s in disp.tools_schema()}
