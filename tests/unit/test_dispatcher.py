@@ -3,8 +3,10 @@
 import pytest
 
 from cogno_anima.tools import ToolDispatcher, ToolPolicyDispatcher
+from cogno_anima.types import ToolResult
 
-from cogno_mcp import MCPDispatcher, MCPDispatchError
+from cogno_mcp import (
+    META_CONFIRM_ARGUMENTS, META_NEEDS_CONFIRMATION, MCPDispatcher, MCPDispatchError)
 from tests.conftest import (
     FakeAnnotations, FakeCallResult, FakeImageBlock, FakeSession, FakeTextBlock, FakeTool)
 
@@ -195,3 +197,133 @@ async def test_structured_content_serialized_as_json():
     disp = MCPDispatcher(session, [tool])
     res = await disp.execute("s", {})
     assert res.output == '{"saved": true}'   # JSON, not Python repr {'saved': True}
+
+
+# ── gate C: the tool ran, READ, and asks before committing ────────────────────────────
+#
+# The bridge carried no confirmation channel at all until 2026-09-02 (`grep -rn
+# needs_confirmation` in this repository: zero hits), so a skill reached over MCP could not
+# raise cogno-anima's third gate. These pin the channel, both placements, and — above all —
+# the direction a malformed one must fail in.
+
+async def _asking(meta=None, block_meta=None, *, is_error=False, tool="delete_file"):
+    t = next(x for x in [
+        FakeTool("delete_file", "Delete a file.",
+                 annotations=FakeAnnotations(readOnlyHint=False, destructiveHint=True)),
+        FakeTool("write_note", "Write a note.")] if x.name == tool)
+    result = FakeCallResult(content=[FakeTextBlock("Remove 'internet' R$120, 03/09?",
+                                                  meta=block_meta)],
+                            isError=is_error, meta=meta)
+    disp = MCPDispatcher(FakeSession([t], results={tool: result}), [t])
+    return await disp.execute(tool, {"query": "internet"})
+
+
+async def test_block_meta_raises_the_gate():
+    """The placement the mcp SDK's server side can actually fill (measured on 1.16.0)."""
+    res = await _asking(block_meta={META_NEEDS_CONFIRMATION: True})
+    assert res.needs_confirmation is True
+    assert res.ok is True                       # a proposal is not a failure
+    assert res.output.startswith("Remove")      # the PROSE reaches the EGO, not a JSON dump
+
+
+async def test_result_meta_raises_the_gate():
+    """The placement the spec points at first — reachable by a non-Python server."""
+    res = await _asking(meta={META_NEEDS_CONFIRMATION: True})
+    assert res.needs_confirmation is True
+
+
+async def test_no_meta_is_not_asking():
+    assert (await _asking()).needs_confirmation is False
+
+
+@pytest.mark.parametrize("value", ["true", "false", 1, 0, "yes", None, {}, [True]])
+async def test_only_a_real_true_raises_the_gate(value):
+    """A malformed value must NOT be read as the promise.
+
+    The flag asserts that nothing was committed, and the EGO records the call
+    ``ok=False, side_effect=False`` on it — i.e. the pipeline states this turn wrote nothing.
+    Granting that to a truthy string is the pipeline making a promise no server made, about a
+    write that may well have happened. ``"false"`` is the case that makes it concrete: truthy
+    in Python, and the plainest possible statement of the opposite.
+    """
+    res = await _asking(block_meta={META_NEEDS_CONFIRMATION: value})
+    assert res.needs_confirmation is False
+
+
+async def test_a_proposal_reports_no_side_effect():
+    """A proposal committed NOTHING, whatever the tool's annotations say about the NAME.
+
+    `delete_file` is annotated destructive, so ``is_mutating`` is True and the pre-2026-09-02
+    mapping would stamp ``ok=True, side_effect=True`` on it. The host's
+    ``CommitRecordingDispatcher`` reads exactly that pair off the raw result and would record a
+    commit for a call that wrote nothing — the failure its own module note describes as
+    theoretical *for want of a producer*.
+    """
+    res = await _asking(block_meta={META_NEEDS_CONFIRMATION: True})
+    assert res.side_effect is False
+    # the per-NAME fact is untouched: it was never the result's to answer
+    assert MCPDispatcher(FakeSession([]), [
+        FakeTool("delete_file", annotations=FakeAnnotations(destructiveHint=True))
+    ]).is_mutating("delete_file") is True
+
+
+async def test_side_effect_survives_when_the_tool_is_not_asking():
+    t = FakeTool("write_note", "Write a note.")
+    disp = MCPDispatcher(FakeSession([t]), [t])
+    res = await disp.execute("write_note", {})
+    assert res.needs_confirmation is False and res.side_effect is True
+
+
+async def test_error_result_still_carries_the_flag():
+    """Pure transport, both branches — the same shape CortexDispatcher takes."""
+    res = await _asking(block_meta={META_NEEDS_CONFIRMATION: True}, is_error=True)
+    assert res.ok is False and res.needs_confirmation is True and res.side_effect is False
+
+
+async def test_confirm_arguments_travel_with_the_flag():
+    """The NAME is the tool's, stated by the tool. The host decides only WHETHER."""
+    res = await _asking(block_meta={META_NEEDS_CONFIRMATION: True,
+                                    META_CONFIRM_ARGUMENTS: {"confirm_tx_id": "tx-7"}})
+    assert res.confirm_arguments == {"confirm_tx_id": "tx-7"}
+    assert isinstance(res, ToolResult)      # every existing consumer is untouched
+
+
+async def test_confirm_arguments_ignored_without_the_flag():
+    """No question asked, nothing to answer — arguments alone must not become a hold."""
+    res = await _asking(block_meta={META_CONFIRM_ARGUMENTS: {"confirm_tx_id": "tx-7"}})
+    assert res.needs_confirmation is False and res.confirm_arguments == {}
+
+
+@pytest.mark.parametrize("bad", ["confirm_tx_id=tx-7", ["confirm_tx_id"], 7, None, {}])
+async def test_malformed_confirm_arguments_are_dropped_not_coerced(bad):
+    res = await _asking(block_meta={META_NEEDS_CONFIRMATION: True,
+                                    META_CONFIRM_ARGUMENTS: bad})
+    assert res.needs_confirmation is True    # the hold stands on its own key
+    assert res.confirm_arguments == {}
+
+
+async def test_meta_under_the_wire_name_is_read_too():
+    """A hand-rolled client may keep the wire name ``_meta``; this dispatcher is SDK-free."""
+    class WireBlock:
+        type = "text"
+        text = "propose"
+        _meta = {META_NEEDS_CONFIRMATION: True}
+
+    t = FakeTool("write_note", "Write a note.")
+    disp = MCPDispatcher(FakeSession([t], results={
+        "write_note": FakeCallResult(content=[WireBlock()])}), [t])
+    assert (await disp.execute("write_note", {})).needs_confirmation is True
+
+
+async def test_untrusted_server_may_still_ask():
+    """``trust_annotations=False`` distrusts hints that RELAX a gate. This one only tightens.
+
+    A server claiming "do not commit yet" can, at worst, make the pipeline ask a question it
+    did not need to ask. Refusing to hear it would mean overriding a server that says it did
+    NOT write — which is the one direction where being wrong is expensive.
+    """
+    t = FakeTool("write_note", "Write a note.")
+    disp = MCPDispatcher(FakeSession([t], results={"write_note": FakeCallResult(
+        content=[FakeTextBlock("p", meta={META_NEEDS_CONFIRMATION: True})])}),
+        [t], trust_annotations=False)
+    assert (await disp.execute("write_note", {})).needs_confirmation is True
