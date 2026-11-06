@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 — 2026-11-06 — release to PyPI of the changes merged since 0.1.1
+
+- feat(dispatcher): o portão C atravessa a ponte — o `_meta` do bloco, medido antes de escolhido (#12)
+- fix(dispatcher): um delete RECUSADO era carimbado como delete (#11)
+
 ## 0.1.1 — 2026-08-02
 
 Dependency fix. **0.1.0 is broken for a fresh install** — upgrade.
