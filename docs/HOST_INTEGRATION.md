@@ -26,9 +26,13 @@ dispatcher; it tears down on exit.
 | `http_session(url, *, headers)` | Streamable HTTP | remote servers |
 | `sse_session(url, *, headers)` | SSE (legacy) | older remote servers |
 
-All need the `mcp` SDK (`pip install "cogno-mcp[mcp]"`); without it they raise
-`MCPUnavailableError`. `headers` is where you put auth (bearer tokens, etc.) — auth,
-retries and reconnection are host concerns (the SDK + your config), not cogno-mcp's.
+All need the `mcp` SDK (`pip install "cogno-mcp[mcp]"`); when it is **not installed** they
+raise `MCPUnavailableError` with that install hint. When the SDK **is** installed but fails
+to import (for example an incompatible `pydantic`), the original `ImportError` is surfaced
+unchanged — its real cause, not a misleading "SDK not installed" that would send you to
+reinstall a package that is already there. `headers` is where you put auth (bearer tokens,
+etc.) — auth, retries and reconnection are host concerns (the SDK + your config), not
+cogno-mcp's.
 
 ## 3. What the EGO sees (mapping)
 

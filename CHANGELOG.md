@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3 — 2026-11-11
+
+- fix(transports): when the `mcp` SDK is installed but fails to import (e.g. an incompatible
+  `pydantic`), the real `ImportError` is now surfaced with its original cause instead of being
+  swallowed into a generic `MCPUnavailableError` ("SDK not installed"). Installation is
+  detected with `importlib.util.find_spec`, which locates the package without executing it, so
+  a present-but-broken SDK is told apart from an absent one. A genuinely missing SDK still
+  raises `MCPUnavailableError` with the install hint.
+
 ## 0.1.2 — 2026-11-06 — release to PyPI of the changes merged since 0.1.1
 
 - feat(dispatcher): o portão C atravessa a ponte — o `_meta` do bloco, medido antes de escolhido (#12)
